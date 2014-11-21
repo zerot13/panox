@@ -22,22 +22,25 @@ char *password;
 
 void BinaryToHex(unsigned char *binary, char *hex, int len);
 void init_string(struct string *s);
-size_t PartnerLoginReturn(void *ptr, size_t size, size_t nmemb, struct string *s);
+size_t PartnerLoginReturn(void *ptr, size_t size, size_t nmemb);
+size_t UserLoginReturn(void *ptr, size_t size, size_t nmemb);
+size_t GetStationListReturn(void *ptr, size_t size, size_t nmemb);
 void DecryptSyncTime(const char *st);
 void ParsePartnerLogin(json_t *root);
 void encodeAuthToken(const char *unencToken, char *encToken);
 void PartnerLogin();
 void UserLogin();
-void ParseUserLogin(struct string *s);
-void GetStations();
+void ParseUserLogin(json_t *root);
+void GetStationList();
 void ReadLoginFromFile(char *fileName);
+long GetCurrentSyncTime();
 
 main()
 {
 	ReadLoginFromFile("login.pwd");
 	PartnerLogin();
 	UserLogin();
-	GetStations();
+	GetStationList();
 	free(partnerAuthToken);
 	free(escapedPAToken);
 	free(partnerId);
@@ -72,16 +75,44 @@ void ReadLoginFromFile(char *fileName)
 	fclose(loginFile);
 }
 
-void GetStations()
+void GetStationList()
 {
-	char url[200] = "https://tuner.pandora.com/services/json/?method=auth.getStationList&partner_id=";
+	char url[200] = "http://tuner.pandora.com/services/json/?method=user.getStationList&partner_id=";
 	strcat(url, partnerId);
 	strcat(url, "&auth_token=");
 	strcat(url, escapedUAToken);
 	strcat(url, "&user_id=");
 	strcat(url, userId);
+	printf("%s\n", url);
 	
 	char body[500] = "{\"includeStationArtUrl\": true,\"userAuthToken\":\"";
+	strcat(body, userAuthToken);
+	strcat(body, "\",\"syncTime\":");
+	sprintf(body, "%s%ld", body, GetCurrentSyncTime());
+	strcat(body, "}");
+	printf("%s\n", body);
+	
+	int encLen = Encrypt(body);
+	char encBody[encLen * 2 + 1];
+	BinaryToHex(body, encBody, encLen);
+	printf("GetStationList: %i\n", SendCurlRequest(url, encBody, GetStationListReturn));
+}
+
+size_t GetStationListReturn(void *ptr, size_t size, size_t nmemb)
+{
+	printf("%s\n", (char *)ptr);
+	json_error_t error;
+	json_t *root = json_loads((char *)ptr, 0, &error);
+	//ParseStationList(root);
+
+	return size*nmemb;
+}
+
+long GetCurrentSyncTime()
+{
+	struct timeval ct;
+	gettimeofday(&ct, NULL);
+	return originalSync + ct.tv_sec - originalTime;
 }
 
 void BinaryToHex(unsigned char *binary, char *hex, int len)
@@ -106,21 +137,10 @@ void init_string(struct string *s)
 	s->ptr[1] = '\0';
 }
 
-size_t PartnerLoginReturn(void *ptr, size_t size, size_t nmemb, struct string *s)
+size_t PartnerLoginReturn(void *ptr, size_t size, size_t nmemb)
 {
-	size_t new_len = s->len + size*nmemb;
-	s->ptr = realloc(s->ptr, new_len+1);
-	if(s->ptr == NULL)
-	{
-		fprintf(stderr, "realloc() failed\n");
-		exit(EXIT_FAILURE);
-	}
-	memcpy(s->ptr+s->len, ptr, size*nmemb);
-	s->ptr[new_len] = '\0';
-	s->len = new_len;
-
 	json_error_t error;
-	json_t *root = json_loads(s->ptr, 0, &error);
+	json_t *root = json_loads((char *)ptr, 0, &error);
 	ParsePartnerLogin(root);
 
 	return size*nmemb;
@@ -173,7 +193,7 @@ void ParsePartnerLogin(json_t *root)
 	DecryptSyncTime(json_string_value(syncTime));
 }
 
-int SendCurlRequest(char *url, char *body, size_t (*ptrFunc)(void *, size_t, size_t, struct string *))
+int SendCurlRequest(char *url, char *body, size_t (*ptrFunc)(void *, size_t, size_t))
 {
 	CURL *curl = curl_easy_init();
 	if(curl) 
@@ -187,13 +207,8 @@ int SendCurlRequest(char *url, char *body, size_t (*ptrFunc)(void *, size_t, siz
 		r |= curl_easy_setopt(curl, CURLOPT_POST, 1);
 		r |= curl_easy_setopt(curl, CURLOPT_POSTFIELDS, body);
 		r |= curl_easy_setopt(curl, CURLOPT_SSL_VERIFYPEER, 0);
-		struct string s;
-		init_string(&s);
 		r |= curl_easy_setopt(curl, CURLOPT_WRITEFUNCTION, ptrFunc);
-		r |= curl_easy_setopt(curl, CURLOPT_WRITEDATA, &s);
 		r |= curl_easy_perform(curl);
-  		
-		free(s.ptr);
 
 		curl_easy_cleanup(curl);
 		return r;
@@ -208,20 +223,11 @@ void PartnerLogin()
 	printf("PartnerLogin: %i\n", SendCurlRequest(url, body, PartnerLoginReturn));
 }
 
-size_t UserLoginReturn(void *ptr, size_t size, size_t nmemb, struct string *s)
-{
-	size_t new_len = s->len + size*nmemb;
-	s->ptr = realloc(s->ptr, new_len+1);
-	if(s->ptr == NULL)
-	{
-		fprintf(stderr, "realloc() failed\n");
-		exit(EXIT_FAILURE);
-	}
-	memcpy(s->ptr+s->len, ptr, size*nmemb);
-	s->ptr[new_len] = '\0';
-	s->len = new_len;
-	
-	ParseUserLogin(s);
+size_t UserLoginReturn(void *ptr, size_t size, size_t nmemb)
+{	
+	json_error_t error;
+	json_t *root = json_loads((char *)ptr, 0, &error);
+	ParseUserLogin(root);
 
 	return size*nmemb;
 }
@@ -235,15 +241,12 @@ void encodeAuthToken(const char *unencToken, char *encToken)
 	curl_easy_cleanup(curl);
 }
 
-void ParseUserLogin(struct string *s)
+void ParseUserLogin(json_t *root)
 {
-	json_error_t error;
-	json_t *root = json_loads(s->ptr, 0, &error);
 	json_t *stat = json_object_get(root, "stat");
 	if(strcmp(json_string_value(stat),"ok") != 0)
 	{
 		printf("OK was not returned.\n");
-		printf("%s\n", s->ptr);
 		return;
 	}
 	json_t *result = json_object_get(root, "result");
