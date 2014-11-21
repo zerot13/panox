@@ -1,7 +1,7 @@
 #include <curl/curl.h>
 #include <jansson.h>
 #include <sys/time.h>
-#include "Crypto.h"
+#include "crypto.h"
 
 struct string
 {
@@ -17,8 +17,8 @@ char *partnerId;
 char *userAuthToken;
 char *escapedUAToken;
 char *userId;
-const char *username = "";
-const char *password = "";
+char *username;
+char *password;
 
 void BinaryToHex(unsigned char *binary, char *hex, int len);
 void init_string(struct string *s);
@@ -30,9 +30,11 @@ void PartnerLogin();
 void UserLogin();
 void ParseUserLogin(struct string *s);
 void GetStations();
+void ReadLoginFromFile(char *fileName);
 
 main()
 {
+	ReadLoginFromFile("login.pwd");
 	PartnerLogin();
 	UserLogin();
 	GetStations();
@@ -42,6 +44,32 @@ main()
 	free(userAuthToken);
 	free(escapedUAToken);
 	free(userId);
+	free(username);
+	free(password);
+}
+
+void ReadLoginFromFile(char *fileName)
+{
+	username = malloc(100);
+	password = malloc(100);
+	FILE *loginFile = fopen(fileName, "r");
+	if(loginFile == NULL)
+	{
+		printf("Could not open credential file.\n");
+		exit(EXIT_FAILURE);
+	}
+	if(fscanf(loginFile, "%s\n", username) != 1)
+	{
+		printf("Could not read username.\n");
+		exit(EXIT_FAILURE);
+	}
+	if(fscanf(loginFile, "%s\n", password) != 1)
+	{
+		printf("Could not read password.\n");
+		exit(EXIT_FAILURE);
+	}
+
+	fclose(loginFile);
 }
 
 void GetStations()
