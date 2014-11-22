@@ -1,13 +1,7 @@
-#include <curl/curl.h>
-#include <jansson.h>
 #include <sys/time.h>
 #include "crypto.h"
-
-struct string
-{
-	char *ptr;
-	size_t len;
-};
+#include "login.h"
+#include "curl.h"
 
 long originalSync;
 long originalTime;
@@ -17,27 +11,30 @@ char *partnerId;
 char *userAuthToken;
 char *escapedUAToken;
 char *userId;
-char *username;
-char *password;
+struct credentials *login;
+
+struct Station
+{
+	char *id;
+	char *name;
+};
 
 void BinaryToHex(unsigned char *binary, char *hex, int len);
-void init_string(struct string *s);
-size_t PartnerLoginReturn(void *ptr, size_t size, size_t nmemb);
-size_t UserLoginReturn(void *ptr, size_t size, size_t nmemb);
-size_t GetStationListReturn(void *ptr, size_t size, size_t nmemb);
+void UserLoginReturn(char *response);
+void GetStationListReturn(char *response);
 void DecryptSyncTime(const char *st);
-void ParsePartnerLogin(json_t *root);
 void encodeAuthToken(const char *unencToken, char *encToken);
-void PartnerLogin();
 void UserLogin();
 void ParseUserLogin(json_t *root);
 void GetStationList();
-void ReadLoginFromFile(char *fileName);
+struct Station ParseStationList(json_t *root);
 long GetCurrentSyncTime();
+void initStationList(struct Station **stationList, int count);
 
 main()
 {
-	ReadLoginFromFile("login.pwd");
+	login = malloc(sizeof(struct credentials));
+	ReadLoginFromFile(login);
 	PartnerLogin();
 	UserLogin();
 	GetStationList();
@@ -47,32 +44,7 @@ main()
 	free(userAuthToken);
 	free(escapedUAToken);
 	free(userId);
-	free(username);
-	free(password);
-}
-
-void ReadLoginFromFile(char *fileName)
-{
-	username = malloc(100);
-	password = malloc(100);
-	FILE *loginFile = fopen(fileName, "r");
-	if(loginFile == NULL)
-	{
-		printf("Could not open credential file.\n");
-		exit(EXIT_FAILURE);
-	}
-	if(fscanf(loginFile, "%s\n", username) != 1)
-	{
-		printf("Could not read username.\n");
-		exit(EXIT_FAILURE);
-	}
-	if(fscanf(loginFile, "%s\n", password) != 1)
-	{
-		printf("Could not read password.\n");
-		exit(EXIT_FAILURE);
-	}
-
-	fclose(loginFile);
+	freeCredentials(login);
 }
 
 void GetStationList()
@@ -83,14 +55,12 @@ void GetStationList()
 	strcat(url, escapedUAToken);
 	strcat(url, "&user_id=");
 	strcat(url, userId);
-	printf("%s\n", url);
 	
 	char body[500] = "{\"includeStationArtUrl\": true,\"userAuthToken\":\"";
 	strcat(body, userAuthToken);
 	strcat(body, "\",\"syncTime\":");
 	sprintf(body, "%s%ld", body, GetCurrentSyncTime());
 	strcat(body, "}");
-	printf("%s\n", body);
 	
 	int encLen = Encrypt(body);
 	char encBody[encLen * 2 + 1];
@@ -98,14 +68,52 @@ void GetStationList()
 	printf("GetStationList: %i\n", SendCurlRequest(url, encBody, GetStationListReturn));
 }
 
-size_t GetStationListReturn(void *ptr, size_t size, size_t nmemb)
+void GetStationListReturn(char *response)
 {
-	printf("%s\n", (char *)ptr);
 	json_error_t error;
-	json_t *root = json_loads((char *)ptr, 0, &error);
-	//ParseStationList(root);
+	json_t *root = json_loads(response, 0, &error);
+	if(!root)
+	{
+		printf("Error: %s\n", error.text);
+		exit(EXIT_FAILURE);
+	}
+	json_t *stat = json_object_get(root, "stat");
+	if(strcmp(json_string_value(stat),"ok") != 0)
+	{
+		printf("OK was not returned while getting station list.\n");
+		printf("%s\n", response);
+		exit(EXIT_FAILURE);
+	}
+	ParseStationList(root);
 
-	return size*nmemb;
+}
+
+struct Station GetStationData(json_t *json)
+{
+	struct Station *station = malloc(sizeof(struct Station));
+	json_t *name = json_object_get(json, "stationName");
+	json_t *id = json_object_get(json, "stationId");
+	station->name = malloc(json_string_length(name));
+	station->id = malloc(json_string_length(id));
+	strcpy(station->name, json_string_value(name));
+	strcpy(station->id, json_string_value(id));
+	return *station;
+}
+
+struct Station ParseStationList(json_t *root)
+{
+	json_t *stations = json_object_get(json_object_get(root, "result"), "stations");
+	int ii;
+	int count = json_array_size(stations);
+	printf("Select a station (1-%i):\n", count - 1);
+	for(ii = 0; ii < count - 1; ii++)
+	{
+		json_t *curStation = json_array_get(stations, ii + 1);
+		printf("%i: %s\n", ii + 1, json_string_value(json_object_get(curStation, "stationName")));
+	}
+	int selection;
+	scanf("%i", &selection);
+	return GetStationData(json_array_get(stations, selection));
 }
 
 long GetCurrentSyncTime()
@@ -125,130 +133,22 @@ void BinaryToHex(unsigned char *binary, char *hex, int len)
 	hex[len*2 + 1] = '\0';
 }
 
-void init_string(struct string *s)
-{
-	s->len = 0;
-	s->ptr = malloc(1);
-	if(s->ptr == NULL)
-	{
-		fprintf(stderr, "malloc() failed\n");
-		exit(EXIT_FAILURE);
-	}
-	s->ptr[1] = '\0';
-}
-
-size_t PartnerLoginReturn(void *ptr, size_t size, size_t nmemb)
-{
+void UserLoginReturn(char *response)
+{	
 	json_error_t error;
-	json_t *root = json_loads((char *)ptr, 0, &error);
-	ParsePartnerLogin(root);
-
-	return size*nmemb;
-}
-
-void DecryptSyncTime(const char *st)
-{
-	int syncLength = strlen(st);
-	unsigned char *decrypted = malloc(syncLength/2);
-	Decrypt(st, decrypted);
-
-	int ii;
-	int index = 0;
-	unsigned char *plainTime = malloc(syncLength/2 - 4);
-	for(ii = 4; ii < syncLength/2; ii++)
-	{
-		if(decrypted[ii] > 47)
-		{
-			plainTime[index] = decrypted[ii];
-			index++;
-		}
-	}
-
-	originalSync = strtol(plainTime, NULL, 10);
-	struct timeval curTime;
-	gettimeofday(&curTime, NULL);
-	originalTime = curTime.tv_sec;
-	free(decrypted);
-	free(plainTime);
-}
-
-void ParsePartnerLogin(json_t *root)
-{
+	json_t *root = json_loads(response, 0, &error);
 	json_t *stat = json_object_get(root, "stat");
 	if(strcmp(json_string_value(stat),"ok") != 0)
 	{
-		printf("OK was not returned.\n");
+		printf("OK was not returned on user login.\n");
+		printf("%s\n", response);
 		return;
 	}
-	json_t *result = json_object_get(root, "result");
-	json_t *partnerAuth = json_object_get(result, "partnerAuthToken");
-	partnerAuthToken = malloc(json_string_length(partnerAuth));
-	escapedPAToken = malloc(json_string_length(partnerAuth)*3);
-	encodeAuthToken(json_string_value(partnerAuth), escapedPAToken);
-	strcpy(partnerAuthToken, json_string_value(partnerAuth));
-	json_t *pid = json_object_get(result, "partnerId");
-	partnerId = malloc(json_string_length(pid));
-	strcpy(partnerId, json_string_value(pid));
-	json_t *syncTime = json_object_get(result, "syncTime");
-	DecryptSyncTime(json_string_value(syncTime));
-}
-
-int SendCurlRequest(char *url, char *body, size_t (*ptrFunc)(void *, size_t, size_t))
-{
-	CURL *curl = curl_easy_init();
-	if(curl) 
-	{
-		CURLcode r = curl_easy_setopt(curl, CURLOPT_URL, url);
-
-		struct curl_slist *headerlist=NULL;
-		headerlist = curl_slist_append(headerlist, "Accept: application/json");
-		headerlist = curl_slist_append(headerlist, "Content-Type: application/json");
-		r |= curl_easy_setopt(curl, CURLOPT_HTTPHEADER, headerlist);
-		r |= curl_easy_setopt(curl, CURLOPT_POST, 1);
-		r |= curl_easy_setopt(curl, CURLOPT_POSTFIELDS, body);
-		r |= curl_easy_setopt(curl, CURLOPT_SSL_VERIFYPEER, 0);
-		r |= curl_easy_setopt(curl, CURLOPT_WRITEFUNCTION, ptrFunc);
-		r |= curl_easy_perform(curl);
-
-		curl_easy_cleanup(curl);
-		return r;
-	}
-	return 1;
-}
-
-void PartnerLogin()
-{
-	char url[] = "https://tuner.pandora.com/services/json/?method=auth.partnerLogin";
-	char body[] = "{\"username\":\"android\",\"password\":\"AC7IBG09A3DTSYM4R41UJWL07VLN8JI7\",\"deviceModel\":\"android-generic\",\"version\":\"5\"}";
-	printf("PartnerLogin: %i\n", SendCurlRequest(url, body, PartnerLoginReturn));
-}
-
-size_t UserLoginReturn(void *ptr, size_t size, size_t nmemb)
-{	
-	json_error_t error;
-	json_t *root = json_loads((char *)ptr, 0, &error);
 	ParseUserLogin(root);
-
-	return size*nmemb;
-}
-
-void encodeAuthToken(const char *unencToken, char *encToken)
-{
-	CURL *curl = curl_easy_init();
-	char *tempToken = curl_easy_escape(curl, unencToken, 0);
-	strcpy(encToken, tempToken);
-	curl_free(tempToken);
-	curl_easy_cleanup(curl);
 }
 
 void ParseUserLogin(json_t *root)
 {
-	json_t *stat = json_object_get(root, "stat");
-	if(strcmp(json_string_value(stat),"ok") != 0)
-	{
-		printf("OK was not returned.\n");
-		return;
-	}
 	json_t *result = json_object_get(root, "result");
 	json_t *userAuth = json_object_get(result, "userAuthToken");
 	userAuthToken = malloc(json_string_length(userAuth));
@@ -268,9 +168,9 @@ void UserLogin()
 	strcat(url, escapedPAToken);	
 
 	unsigned char body[500] = "{\"loginType\":\"user\",\"username\":\"";
-	strcat(body, username);
+	strcat(body, login->username);
 	strcat(body, "\",\"password\":\"");
-	strcat(body, password);
+	strcat(body, login->password);
 	strcat(body, "\", \"includePandoraOneInfo\": true,\"includeAdAttributes\": true,\"includeSubscriptionExpiration\": true, \"partnerAuthToken\":\"");
 	strcat(body, partnerAuthToken);
 	strcat(body, "\",\"syncTime\":");
