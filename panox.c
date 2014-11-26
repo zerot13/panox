@@ -81,7 +81,7 @@ void GetStations()
 	strcat(url, "&user_id=");
 	strcat(url, userId);
 	
-	char body[500] = "";
+	char body[500] = "{\"includeStationArtUrl\": true,\"userAuthToken\":\"";
 }
 
 void BinaryToHex(unsigned char *binary, char *hex, int len)
