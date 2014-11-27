@@ -1,13 +1,29 @@
 #include <jansson.h>
 
-struct credentials
+struct Credentials
 {
 	char *username;
 	char *password;
 };
 
-void ReadLoginFromFile(struct credentials *log);
-void freeCredentials(struct credentials *login);
-void PartnerLogin();
-void PartnerLoginReturn(char *response);
-void ParsePartnerLogin(json_t *root);
+struct SyncTime
+{
+	long originalSync;
+	long originalTime;
+};
+
+struct Auth
+{
+	char *token;
+	char *escapedToken;
+	char *partnerId;
+	char *userId;
+	struct SyncTime *sync;
+	struct Credentials *login;
+};
+
+void Login(struct Auth *auth);
+void allocAuth(struct Auth **auth);
+void freeCredentials(struct Credentials *login);
+void freeAuth(struct Auth *auth);
+long GetCurrentSyncTime(struct SyncTime *sync);

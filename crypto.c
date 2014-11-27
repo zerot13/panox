@@ -39,3 +39,13 @@ void Decrypt(const char *encrypted, unsigned char *decrypted)
 	mcrypt_generic_init(mc, key, 11, "");
 	mdecrypt_generic(mc, decrypted, encLength/2);
 }
+
+void BinaryToHex(unsigned char *binary, char *hex, int len)
+{
+	int count;
+	for(count = 0; count < len; count++)
+	{
+		sprintf(hex+count*2, "%02x", binary[count]);
+	}
+	hex[len*2 + 1] = '\0';
+}
