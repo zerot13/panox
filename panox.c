@@ -1,10 +1,9 @@
 #include "player.h"
 #include "login.h"
 
-struct Auth *auth;
-
 main()
 {
+	struct Auth *auth;
 	allocAuth(&auth);
 	Login(auth);
 
